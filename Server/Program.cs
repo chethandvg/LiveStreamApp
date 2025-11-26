@@ -1,11 +1,14 @@
 using Microsoft.AspNetCore.ResponseCompression;
+using Scalar.AspNetCore;
+using Server.Hubs;
+using Server.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddOpenApi();
 
 // Add SignalR with Azure SignalR Service
 builder.Services.AddSignalR()
@@ -45,8 +48,8 @@ var app = builder.Build();
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    app.MapOpenApi();
+    app.MapScalarApiReference();
     app.UseWebAssemblyDebugging();
 }
 else

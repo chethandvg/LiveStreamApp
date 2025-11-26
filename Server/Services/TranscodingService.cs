@@ -20,35 +20,47 @@ namespace Server.Services
         {
             _logger.LogInformation("TranscodingService started");
 
-            while (!stoppingToken.IsCancellationRequested)
+            try
             {
-                // Monitor for new streams from StreamIngestController
-                foreach (var kvp in StreamIngestController.ActiveStreams)
+                while (!stoppingToken.IsCancellationRequested)
                 {
-                    var streamId = kvp.Key;
-                    var buffer = kvp.Value;
-
-                    if (!_activeStreams.ContainsKey(streamId))
+                    // Monitor for new streams from StreamIngestController
+                    foreach (var kvp in StreamIngestController.ActiveStreams)
                     {
-                        _logger.LogInformation($"Starting transcoding for stream: {streamId}");
-                        var processor = new StreamProcessor(streamId, buffer, _configuration, _logger);
-                        _activeStreams[streamId] = processor;
+                        var streamId = kvp.Key;
+                        var buffer = kvp.Value;
 
-                        // Start processing in background
-                        _ = Task.Run(() => processor.ProcessStreamAsync(stoppingToken), stoppingToken);
+                        if (!_activeStreams.ContainsKey(streamId))
+                        {
+                            _logger.LogInformation($"Starting transcoding for stream: {streamId}");
+                            var processor = new StreamProcessor(streamId, buffer, _configuration, _logger);
+                            _activeStreams[streamId] = processor;
+
+                            // Start processing in background
+                            _ = Task.Run(() => processor.ProcessStreamAsync(stoppingToken), stoppingToken);
+                        }
                     }
-                }
 
-                // Clean up completed streams
-                var completedStreams = _activeStreams.Where(s => s.Value.IsCompleted).ToList();
-                foreach (var stream in completedStreams)
-                {
-                    _activeStreams.TryRemove(stream.Key, out _);
-                    StreamIngestController.ActiveStreams.TryRemove(stream.Key, out _);
-                    _logger.LogInformation($"Cleaned up stream: {stream.Key}");
-                }
+                    // Clean up completed streams
+                    var completedStreams = _activeStreams.Where(s => s.Value.IsCompleted).ToList();
+                    foreach (var stream in completedStreams)
+                    {
+                        _activeStreams.TryRemove(stream.Key, out _);
+                        StreamIngestController.ActiveStreams.TryRemove(stream.Key, out _);
+                        _logger.LogInformation($"Cleaned up stream: {stream.Key}");
+                    }
 
-                await Task.Delay(1000, stoppingToken);
+                    await Task.Delay(1000, stoppingToken);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("TranscodingService is stopping");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred in TranscodingService");
+                throw;
             }
         }
     }

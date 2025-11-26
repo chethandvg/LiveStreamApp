@@ -1,7 +1,247 @@
 ﻿@page "/"
+@inject HttpClient Http
+@inject NavigationManager Navigation
 
-<PageTitle>Home</PageTitle>
+<PageTitle>LiveStream App - Home</PageTitle>
 
-<h1>Hello, world!</h1>
+<div class="container mt-5">
+    <!-- Hero Section -->
+    <div class="row align-items-center mb-5">
+        <div class="col-lg-6">
+            <h1 class="display-4 fw-bold">
+                <span class="text-danger">🔴</span> Stream Live Video
+            </h1>
+            <p class="lead text-muted mb-4">
+                Broadcast your content to thousands of viewers worldwide.
+                Built with .NET, Blazor, and Azure for maximum scalability.
+            </p>
+            <div class="d-grid gap-2 d-md-flex">
+                <a href="/broadcast" class="btn btn-danger btn-lg px-4">
+                    <i class="bi bi-broadcast"></i> Start Broadcasting
+                </a>
+                <button class="btn btn-outline-primary btn-lg px-4" @onclick="ViewActiveStreams">
+                    <i class="bi bi-tv"></i> Watch Streams
+                </button>
+            </div>
+        </div>
+        <div class="col-lg-6">
+            <img src="https://via.placeholder.com/600x400/6c757d/ffffff?text=Live+Streaming"
+                 alt="Live Streaming"
+                 class="img-fluid rounded shadow-lg" />
+        </div>
+    </div>
 
-Welcome to your new app.
+    <!-- Features Section -->
+    <div class="row text-center mb-5">
+        <div class="col-12">
+            <h2 class="mb-4">Powerful Features</h2>
+        </div>
+        <div class="col-md-4 mb-4">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body">
+                    <div class="feature-icon bg-danger text-white rounded-circle mx-auto mb-3">
+                        <i class="bi bi-lightning-charge-fill fs-1"></i>
+                    </div>
+                    <h5 class="card-title">Low Latency</h5>
+                    <p class="card-text text-muted">
+                        15-30 second delay with HLS streaming. Perfect for webinars and presentations.
+                    </p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4 mb-4">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body">
+                    <div class="feature-icon bg-primary text-white rounded-circle mx-auto mb-3">
+                        <i class="bi bi-people-fill fs-1"></i>
+                    </div>
+                    <h5 class="card-title">Unlimited Viewers</h5>
+                    <p class="card-text text-muted">
+                        Azure CDN scales automatically to handle thousands of concurrent viewers.
+                    </p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4 mb-4">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body">
+                    <div class="feature-icon bg-success text-white rounded-circle mx-auto mb-3">
+                        <i class="bi bi-chat-dots-fill fs-1"></i>
+                    </div>
+                    <h5 class="card-title">Real-time Chat</h5>
+                    <p class="card-text text-muted">
+                        Interact with your audience using SignalR-powered live chat.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active Streams Section -->
+    <div class="row">
+        <div class="col-12">
+            <h2 class="mb-4">Active Streams</h2>
+            @if (isLoading)
+            {
+                <div class="text-center py-5">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading streams...</span>
+                    </div>
+                </div>
+            }
+            else if (activeStreams == null || !activeStreams.Any())
+            {
+                <div class="alert alert-info">
+                    <i class="bi bi-info-circle"></i> No active streams right now.
+                    <a href="/broadcast" class="alert-link">Be the first to go live!</a>
+                </div>
+            }
+            else
+            {
+                <div class="row">
+                    @foreach (var stream in activeStreams)
+                    {
+                        <div class="col-md-6 col-lg-4 mb-4">
+                            <div class="card stream-card h-100">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-start mb-2">
+                                        <h5 class="card-title">@stream.Key</h5>
+                                        <span class="badge bg-danger">LIVE</span>
+                                    </div>
+                                    <p class="card-text text-muted small">
+                                        <i class="bi bi-clock"></i> Duration: @stream.Duration<br />
+                                        <i class="bi bi-people"></i> Viewers: @(stream.ChunksReceived / 60) (estimated)
+                                    </p>
+                                    <a href="/watch/@stream.Key" class="btn btn-primary btn-sm w-100">
+                                        <i class="bi bi-play-circle"></i> Watch Now
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+
+    <!-- How It Works Section -->
+    <div class="row mt-5 pt-5 border-top">
+        <div class="col-12 text-center mb-4">
+            <h2>How It Works</h2>
+        </div>
+        <div class="col-md-3 text-center mb-4">
+            <div class="step-number">1</div>
+            <h5>Create Stream</h5>
+            <p class="text-muted">Click "Go Live" and enter your stream details</p>
+        </div>
+        <div class="col-md-3 text-center mb-4">
+            <div class="step-number">2</div>
+            <h5>Allow Permissions</h5>
+            <p class="text-muted">Grant access to your camera and microphone</p>
+        </div>
+        <div class="col-md-3 text-center mb-4">
+            <div class="step-number">3</div>
+            <h5>Share Link</h5>
+            <p class="text-muted">Share your stream URL with viewers</p>
+        </div>
+        <div class="col-md-3 text-center mb-4">
+            <div class="step-number">4</div>
+            <h5>Go Live!</h5>
+            <p class="text-muted">Start broadcasting to your audience</p>
+        </div>
+    </div>
+</div>
+
+<style>
+    .feature-icon {
+        width: 80px;
+        height: 80px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .stream-card {
+        border: 2px solid #dee2e6;
+        transition: transform 0.2s;
+    }
+
+        .stream-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+    .step-number {
+        width: 60px;
+        height: 60px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+        font-weight: bold;
+        margin: 0 auto 15px;
+    }
+</style>
+
+@code {
+    private bool isLoading = true;
+    private List<ActiveStreamInfo>? activeStreams;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadActiveStreams();
+    }
+
+    private async Task LoadActiveStreams()
+    {
+        isLoading = true;
+        try
+        {
+            var response = await Http.GetFromJsonAsync<ActiveStreamsResponse>("api/streamingest/active");
+            if (response != null && response.Streams != null)
+            {
+                activeStreams = response.Streams;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading streams: {ex.Message}");
+            activeStreams = new List<ActiveStreamInfo>();
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task ViewActiveStreams()
+    {
+        await LoadActiveStreams();
+        if (activeStreams?.Any() == true)
+        {
+            Navigation.NavigateTo($"/watch/{activeStreams.First().Key}");
+        }
+        else
+        {
+            Navigation.NavigateTo("/broadcast");
+        }
+    }
+
+    public class ActiveStreamsResponse
+    {
+        public int Count { get; set; }
+        public List<ActiveStreamInfo> Streams { get; set; } = new();
+    }
+
+    public class ActiveStreamInfo
+    {
+        public string Key { get; set; } = string.Empty;
+        public DateTime StartTime { get; set; }
+        public string Duration { get; set; } = string.Empty;
+        public int ChunksReceived { get; set; }
+        public long TotalBytesReceived { get; set; }
+    }
+}

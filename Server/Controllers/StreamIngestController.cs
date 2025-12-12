@@ -4,8 +4,13 @@ using System.Collections.Concurrent;
 
 namespace Server.Controllers
 {
+    /// <summary>
+    /// Manages live stream ingestion, buffering, and metadata tracking
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
+    [Produces("application/json")]
+    [Tags("Stream Management")]
     public class StreamIngestController : ControllerBase
     {
         private readonly ILogger<StreamIngestController> _logger;
@@ -21,7 +26,20 @@ namespace Server.Controllers
             _logger = logger;
         }
 
+        /// <summary>
+        /// Starts a new live stream session
+        /// </summary>
+        /// <param name="streamId">Unique identifier for the stream (1-50 characters)</param>
+        /// <returns>Stream session details including start time</returns>
+        /// <response code="200">Stream started successfully</response>
+        /// <response code="400">Invalid stream ID</response>
+        /// <response code="409">Stream already exists</response>
+        /// <response code="500">Internal server error</response>
         [HttpPost("start/{streamId}")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status409Conflict)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
         public IActionResult StartStream(string streamId)
         {
             // Validate streamId
@@ -70,8 +88,23 @@ namespace Server.Controllers
             }
         }
 
+        /// <summary>
+        /// Uploads a video chunk to an active stream
+        /// </summary>
+        /// <param name="streamId">Stream identifier</param>
+        /// <returns>Confirmation of bytes received</returns>
+        /// <response code="200">Chunk uploaded successfully</response>
+        /// <response code="400">Empty or invalid chunk</response>
+        /// <response code="404">Stream not found</response>
+        /// <response code="429">Buffer full, slow down upload rate</response>
+        /// <response code="503">Server busy, unable to process chunk</response>
         [HttpPost("upload/{streamId}")]
         [RequestSizeLimit(10_000_000)] // 10MB max per chunk
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+        [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
         public async Task<IActionResult> UploadChunk(string streamId)
         {
             // Validate stream exists
@@ -126,7 +159,18 @@ namespace Server.Controllers
             }
         }
 
+        /// <summary>
+        /// Stops an active stream session
+        /// </summary>
+        /// <param name="streamId">Stream identifier</param>
+        /// <returns>Stream metadata including duration and statistics</returns>
+        /// <response code="200">Stream stopped successfully</response>
+        /// <response code="404">Stream not found</response>
+        /// <response code="500">Failed to stop stream</response>
         [HttpPost("stop/{streamId}")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
         public IActionResult StopStream(string streamId)
         {
             if (!ActiveStreams.TryGetValue(streamId, out var buffer))
@@ -163,7 +207,16 @@ namespace Server.Controllers
             }
         }
 
+        /// <summary>
+        /// Gets the status and metadata of a specific stream
+        /// </summary>
+        /// <param name="streamId">Stream identifier</param>
+        /// <returns>Stream status and metadata</returns>
+        /// <response code="200">Stream status retrieved</response>
+        /// <response code="404">Stream not found</response>
         [HttpGet("status/{streamId}")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
         public IActionResult GetStreamStatus(string streamId)
         {
             if (!_streamMetadata.TryGetValue(streamId, out var metadata))
@@ -181,7 +234,13 @@ namespace Server.Controllers
             });
         }
 
+        /// <summary>
+        /// Gets all currently active streams
+        /// </summary>
+        /// <returns>List of active streams with their metadata</returns>
+        /// <response code="200">Active streams retrieved</response>
         [HttpGet("active")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
         public IActionResult GetActiveStreams()
         {
             var activeStreams = _streamMetadata

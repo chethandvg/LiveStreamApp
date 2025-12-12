@@ -8,14 +8,45 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddOpenApi();
+builder.Services.AddOpenApi(options =>
+{
+    options.AddDocumentTransformer((document, context, cancellationToken) =>
+    {
+        document.Info.Title = "Live Stream API";
+        document.Info.Version = "v1";
+        document.Info.Description = "API for managing live streaming, chat, and transcoding services";
+        return Task.CompletedTask;
+    });
+});
 
 // Add SignalR with Azure SignalR Service
-builder.Services.AddSignalR()
-    .AddAzureSignalR(options =>
-    {
-        options.ConnectionString = builder.Configuration["Azure:SignalR:ConnectionString"];
-    });
+var signalRConnectionString = builder.Configuration["Azure:SignalR:ConnectionString"];
+if (string.IsNullOrEmpty(signalRConnectionString))
+{
+    // Fallback to in-memory SignalR if connection string is not provided
+    builder.Services.AddSignalR();
+    Console.WriteLine("WARNING: Azure SignalR connection string not found. Using in-memory SignalR.");
+}
+else if (signalRConnectionString.Contains("azure.msi"))
+{
+    // Using Managed Identity
+    builder.Services.AddSignalR()
+        .AddAzureSignalR(options =>
+        {
+            options.ConnectionString = signalRConnectionString;
+        });
+    Console.WriteLine("INFO: Azure SignalR configured with Managed Identity authentication.");
+}
+else
+{
+    // Using Access Key
+    builder.Services.AddSignalR()
+        .AddAzureSignalR(options =>
+        {
+            options.ConnectionString = signalRConnectionString;
+        });
+    Console.WriteLine("INFO: Azure SignalR configured with Access Key authentication.");
+}
 
 // Register the background transcoding service
 builder.Services.AddHostedService<TranscodingService>();
@@ -25,14 +56,22 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowBlazor", policy =>
     {
-        policy
-            .WithOrigins(
-                "https://localhost:7001",  // Your Blazor WASM dev URL
-                "https://yourdomain.com"   // Your production domain
-            )
-            .AllowAnyMethod()
-            .AllowAnyHeader()
-            .AllowCredentials(); // Required for SignalR
+        if (builder.Environment.IsDevelopment())
+        {
+            policy
+                .WithOrigins("https://localhost:7195")
+                .AllowAnyMethod()
+                .AllowAnyHeader()
+                .AllowCredentials();
+        }
+        else
+        {
+            policy
+                .WithOrigins("https://yourdomain.com")
+                .AllowAnyMethod()
+                .AllowAnyHeader()
+                .AllowCredentials();
+        }
     });
 });
 
@@ -49,7 +88,17 @@ var app = builder.Build();
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
-    app.MapScalarApiReference();
+    app.MapScalarApiReference(options =>
+    {
+        options
+            .WithTitle("Live Stream API Documentation")
+            .WithTheme(ScalarTheme.Purple)
+            .WithDefaultHttpClient(ScalarTarget.CSharp, ScalarClient.HttpClient)
+            .WithSidebar(true)
+            .WithModels(true)
+            .WithDownloadButton(true)
+            .WithSearchHotKey("k");
+    });
     app.UseWebAssemblyDebugging();
 }
 else

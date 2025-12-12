@@ -267,8 +267,10 @@
 
     private async Task InitializeChatConnection()
     {
+        var hubUrl = new Uri(Http.BaseAddress!, "chathub");
+        
         hubConnection = new HubConnectionBuilder()
-            .WithUrl(Navigation.ToAbsoluteUri("/chathub"))
+            .WithUrl(hubUrl)
             .WithAutomaticReconnect()
             .Build();
 
@@ -294,9 +296,16 @@
             viewerCount = count;
             InvokeAsync(StateHasChanged);
         });
-
-        await hubConnection.StartAsync();
-        await hubConnection.SendAsync("JoinStream", streamId, broadcasterName);
+        try
+        {
+            await hubConnection.StartAsync();
+            await hubConnection.SendAsync("JoinStream", streamId, broadcasterName);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(ex.Message);
+            throw;
+        }
     }
 
     private async Task SendChatMessage()

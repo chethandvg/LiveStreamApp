@@ -1,5 +1,6 @@
 ﻿@page "/watch/{StreamId}"
 @inject IJSRuntime JS
+@inject HttpClient Http
 @inject IConfiguration Configuration
 @inject NavigationManager Navigation
 @using Microsoft.AspNetCore.SignalR.Client
@@ -306,8 +307,10 @@
 
         try
         {
+            var hubUrl = new Uri(Http.BaseAddress!, "chathub");
+            
             hubConnection = new HubConnectionBuilder()
-                .WithUrl(Navigation.ToAbsoluteUri("/chathub"))
+                .WithUrl(hubUrl)
                 .WithAutomaticReconnect()
                 .Build();
 

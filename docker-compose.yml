@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  livestream-app:
+    build:
+      context: .
+      dockerfile: Server/Dockerfile
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:8080;https://+:8081
+      - ASPNETCORE_HTTPS_PORT=8081
+      - AzureStorage__ConnectionString=${AZURE_STORAGE_CONNECTION_STRING}
+      - Azure__SignalR__ConnectionString=${AZURE_SIGNALR_CONNECTION_STRING}
+      - Azure__CDN__BaseUrl=${AZURE_CDN_BASE_URL}
+      - AllowedOrigins__AppService=${ALLOWED_ORIGIN_APPSERVICE}
+      - AllowedOrigins__CDN=${ALLOWED_ORIGIN_CDN}
+      - AllowedOrigins__CustomDomain=${ALLOWED_ORIGIN_CUSTOM}
+    volumes:
+      - ${APPDATA}/Microsoft/UserSecrets:/root/.microsoft/usersecrets:ro
+      - ${HOME}/.aspnet/https:/https:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s

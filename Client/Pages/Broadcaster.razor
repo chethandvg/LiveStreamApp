@@ -1,0 +1,397 @@
+﻿@page "/broadcast"
+@inject IJSRuntime JS
+@inject HttpClient Http
+@inject NavigationManager Navigation
+@using Microsoft.AspNetCore.SignalR.Client
+@implements IAsyncDisposable
+
+<PageTitle>Go Live - Broadcast</PageTitle>
+
+<div class="container mt-4">
+    <div class="row">
+        <!-- Video Preview Section -->
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header bg-danger text-white">
+                    <h4><i class="bi bi-broadcast"></i> Broadcast Studio</h4>
+                </div>
+                <div class="card-body">
+                    <div class="video-container mb-3" style="position: relative;">
+                        <video id="localVideo"
+                               autoplay
+                               muted
+                               playsinline
+                               style="width: 100%; border-radius: 8px; background: #000;">
+                        </video>
+
+                        @if (isStreaming)
+                        {
+                            <div class="live-indicator">
+                                <span class="badge bg-danger pulse">🔴 LIVE</span>
+                            </div>
+                        }
+                    </div>
+
+                    <div class="stream-controls">
+                        @if (!isStreaming)
+                        {
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">Stream Title</label>
+                                <input @bind="streamTitle" class="form-control" placeholder="Enter your stream title" />
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">Your Name</label>
+                                <input @bind="broadcasterName" class="form-control" placeholder="Enter your name" />
+                            </div>
+
+                            <button class="btn btn-danger btn-lg w-100"
+                                    @onclick="StartBroadcasting"
+                                    disabled="@(string.IsNullOrEmpty(streamTitle) || string.IsNullOrEmpty(broadcasterName))">
+                                <i class="bi bi-play-circle"></i> Start Broadcasting
+                            </button>
+                        }
+                        else
+                        {
+                            <div class="alert alert-success mb-3">
+                                <strong>You are LIVE!</strong><br />
+                                Stream ID: <code>@streamId</code><br />
+                                <small>Share this link: <a href="@GetViewerUrl()" target="_blank">@GetViewerUrl()</a></small>
+                            </div>
+
+                            <div class="stats-row mb-3">
+                                <div class="stat-item">
+                                    <div class="stat-label">Duration</div>
+                                    <div class="stat-value">@streamDuration</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-label">Viewers</div>
+                                    <div class="stat-value">@viewerCount</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-label">Data Sent</div>
+                                    <div class="stat-value">@FormatBytes(totalBytesSent)</div>
+                                </div>
+                            </div>
+
+                            <button class="btn btn-dark btn-lg w-100" @onclick="StopBroadcasting">
+                                <i class="bi bi-stop-circle"></i> End Broadcast
+                            </button>
+                        }
+                    </div>
+
+                    @if (!string.IsNullOrEmpty(errorMessage))
+                    {
+                        <div class="alert alert-danger mt-3">
+                            <strong>Error:</strong> @errorMessage
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat Section -->
+        <div class="col-lg-4">
+            <div class="card h-100">
+                <div class="card-header bg-primary text-white">
+                    <h5><i class="bi bi-chat-dots"></i> Live Chat</h5>
+                </div>
+                <div class="card-body d-flex flex-column" style="height: 600px;">
+                    <div class="chat-messages flex-grow-1 overflow-auto mb-3" id="chatMessages">
+                        @foreach (var message in chatMessages)
+                        {
+                            <div class="chat-message mb-2">
+                                <strong class="text-primary">@message.Username:</strong>
+                                <span>@message.Message</span>
+                                <br /><small class="text-muted">@message.Timestamp</small>
+                            </div>
+                        }
+                    </div>
+
+                    @if (isStreaming && hubConnection?.State == HubConnectionState.Connected)
+                    {
+                        <div class="input-group">
+                            <input @bind="currentMessage"
+                                   @bind:event="oninput"
+                                   @onkeyup="HandleChatKeyPress"
+                                   class="form-control"
+                                   placeholder="Type a message..."
+                                   maxlength="500" />
+                            <button class="btn btn-primary" @onclick="SendChatMessage" disabled="@string.IsNullOrWhiteSpace(currentMessage)">
+                                <i class="bi bi-send"></i>
+                            </button>
+                        </div>
+                    }
+                    else if (!isStreaming)
+                    {
+                        <div class="alert alert-info">Start broadcasting to enable chat</div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .live-indicator {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        z-index: 10;
+    }
+    .pulse {
+        animation: pulse 1.5s infinite;
+    }
+    @@keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+    .stats-row {
+        display: flex;
+        gap: 10px;
+    }
+    .stat-item {
+        flex: 1;
+        text-align: center;
+        padding: 10px;
+        background: #f8f9fa;
+        border-radius: 5px;
+    }
+    .stat-label {
+        font-size: 12px;
+        color: #6c757d;
+    }
+    .stat-value {
+        font-size: 20px;
+        font-weight: bold;
+        color: #212529;
+    }
+    .chat-messages {
+        background: #f8f9fa;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    .chat-message {
+        padding: 5px;
+        border-bottom: 1px solid #dee2e6;
+    }
+</style>
+
+@code {
+    private string streamId = string.Empty;
+    private string streamTitle = "";
+    private string broadcasterName = "";
+    private bool isStreaming = false;
+    private string errorMessage = string.Empty;
+    private string streamDuration = "00:00";
+    private int viewerCount = 0;
+    private long totalBytesSent = 0;
+    private Timer? durationTimer;
+    private DateTime streamStartTime;
+    private DotNetObjectReference<Broadcaster>? dotnetHelper;
+
+    // Chat
+    private HubConnection? hubConnection;
+    private List<ChatMessage> chatMessages = new();
+    private string currentMessage = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        streamId = $"stream_{Guid.NewGuid().ToString("N").Substring(0, 8)}";
+        dotnetHelper = DotNetObjectReference.Create(this);
+    }
+
+    [JSInvokable]
+    public void UpdateBytesSent(long bytes)
+    {
+        Console.WriteLine($"🔔 UpdateBytesSent called with {bytes} bytes. Total before: {totalBytesSent}");
+        totalBytesSent += bytes;
+        Console.WriteLine($"✅ Total after: {totalBytesSent} bytes ({FormatBytes(totalBytesSent)})");
+        StateHasChanged();
+    }
+
+    private async Task StartBroadcasting()
+    {
+        try
+        {
+            errorMessage = string.Empty;
+
+            // 1. Initialize stream on server
+            var response = await Http.PostAsync($"api/streamingest/start/{streamId}", null);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                errorMessage = $"Failed to start stream: {error}";
+                return;
+            }
+
+            // 2. Connect to SignalR chat
+            await InitializeChatConnection();
+
+            // 3. Start video capture in JavaScript (pass dotnetHelper for callbacks)
+            await JS.InvokeVoidAsync("startCapture", streamId, dotnetHelper);
+
+            // 4. Update UI state
+            isStreaming = true;
+            streamStartTime = DateTime.UtcNow;
+            totalBytesSent = 0; // Reset counter
+
+            // Start duration timer
+            durationTimer = new Timer(_ => UpdateDuration(), null, 0, 1000);
+
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error starting broadcast: {ex.Message}";
+        }
+    }
+
+    private async Task StopBroadcasting()
+    {
+        try
+        {
+            isStreaming = false;
+            durationTimer?.Dispose();
+
+            // Stop JavaScript capture
+            await JS.InvokeVoidAsync("stopCapture");
+
+            // Notify server to stop stream
+            await Http.PostAsync($"api/streamingest/stop/{streamId}", null);
+
+            // Disconnect from chat
+            if (hubConnection != null)
+            {
+                await hubConnection.SendAsync("LeaveStream", streamId);
+                await hubConnection.DisposeAsync();
+                hubConnection = null;
+            }
+
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error stopping broadcast: {ex.Message}";
+        }
+    }
+
+    private async Task InitializeChatConnection()
+    {
+        var hubUrl = new Uri(Http.BaseAddress!, "chathub");
+        
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(hubUrl)
+            .WithAutomaticReconnect()
+            .Build();
+
+        hubConnection.On<string, string, string>("ReceiveMessage", (username, message, timestamp) =>
+        {
+            chatMessages.Add(new ChatMessage
+            {
+                Username = username,
+                Message = message,
+                Timestamp = timestamp
+            });
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<string, int>("UserJoined", (username, count) =>
+        {
+            viewerCount = count;
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<int>("ViewerCount", (count) =>
+        {
+            viewerCount = count;
+            InvokeAsync(StateHasChanged);
+        });
+        try
+        {
+            await hubConnection.StartAsync();
+            await hubConnection.SendAsync("JoinStream", streamId, broadcasterName);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(ex.Message);
+            throw;
+        }
+    }
+
+    private async Task SendChatMessage()
+    {
+        if (!string.IsNullOrWhiteSpace(currentMessage) && hubConnection != null)
+        {
+            await hubConnection.SendAsync("SendMessage", streamId, currentMessage);
+            currentMessage = string.Empty;
+        }
+    }
+
+    private async Task HandleChatKeyPress(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(currentMessage))
+        {
+            await SendChatMessage();
+        }
+    }
+
+    private void UpdateDuration()
+    {
+        if (isStreaming)
+        {
+            var elapsed = DateTime.UtcNow - streamStartTime;
+            streamDuration = $"{elapsed:mm\\:ss}";
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private string GetViewerUrl()
+    {
+        return $"{Navigation.BaseUri}watch/{streamId}";
+    }
+
+    private string FormatBytes(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB" };
+        int order = 0;
+        double size = bytes;
+        while (size >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            size /= 1024;
+        }
+        return $"{size:0.##} {sizes[order]}";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        durationTimer?.Dispose();
+        
+        if (hubConnection is not null)
+        {
+            try
+            {
+                if (hubConnection.State == HubConnectionState.Connected)
+                {
+                    await hubConnection.SendAsync("LeaveStream", streamId);
+                }
+            }
+            catch
+            {
+                // Ignore errors during disposal
+            }
+            await hubConnection.DisposeAsync();
+        }
+
+        dotnetHelper?.Dispose();
+    }
+
+    private class ChatMessage
+    {
+        public string Username { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+        public string Timestamp { get; set; } = string.Empty;
+    }
+}

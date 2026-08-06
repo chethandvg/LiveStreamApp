@@ -1,0 +1,701 @@
+﻿@page "/watch/{StreamId}"
+@inject IJSRuntime JS
+@inject HttpClient Http
+@inject IConfiguration Configuration
+@inject NavigationManager Navigation
+@using Microsoft.AspNetCore.SignalR.Client
+@implements IAsyncDisposable
+
+<PageTitle>Watch Stream - @StreamId</PageTitle>
+
+<div class="container-fluid mt-4">
+    <div class="row">
+        <!-- Video Player Section -->
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                    <h4><i class="bi bi-tv"></i> Live Stream</h4>
+                    @if (isLive)
+                    {
+                        <span class="badge bg-danger live-badge">🔴 LIVE</span>
+                    }
+                </div>
+                <div class="card-body p-0">
+                    @if (isLoading)
+                    {
+                        <div class="player-loading">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading stream...</span>
+                            </div>
+                            <p class="mt-2">Connecting to stream...</p>
+                            <small class="text-muted">Stream URL: @streamUrl</small>
+                        </div>
+                    }
+                    
+                    @if (!string.IsNullOrEmpty(errorMessage))
+                    {
+                        <div class="alert alert-danger m-3">
+                            <h5><i class="bi bi-exclamation-triangle-fill"></i> Stream Error</h5>
+                            <p><strong>@errorMessage</strong></p>
+                            <hr />
+                            <small><strong>Stream ID:</strong> @StreamId</small><br />
+                            <small><strong>Expected Stream URL:</strong> @streamUrl</small>
+                            
+                            @if (!string.IsNullOrEmpty(debugInfo))
+                            {
+                                <div class="mt-3">
+                                    <strong>Debug Information:</strong>
+                                    <pre class="bg-light p-2 small text-dark rounded">@debugInfo</pre>
+                                </div>
+                            }
+                            
+                            <div class="mt-3">
+                                <button class="btn btn-primary me-2" @onclick="CheckStreamAvailability">
+                                    <i class="bi bi-arrow-clockwise"></i> Check Again
+                                </button>
+                                <button class="btn btn-secondary me-2" @onclick="RefreshStream">
+                                    <i class="bi bi-arrow-repeat"></i> Retry Stream
+                                </button>
+                                <button class="btn btn-info" @onclick="ShowDiagnostics">
+                                    <i class="bi bi-clipboard-data"></i> Run Diagnostics
+                                </button>
+                            </div>
+                            
+                            <div class="alert alert-info mt-3 mb-0">
+                                <small>
+                                    <strong>Troubleshooting Tips:</strong>
+                                    <ul class="mb-0 mt-1">
+                                        <li>Ensure the broadcaster has started streaming</li>
+                                        <li>Wait 5-10 seconds after starting for stream to initialize</li>
+                                        <li>Check that Azure Front Door CORS is configured (see documentation)</li>
+                                        <li>Verify stream files are being uploaded to Azure Storage</li>
+                                        <li>The page will automatically retry every few seconds</li>
+                                    </ul>
+                                </small>
+                            </div>
+                        </div>
+                    }
+                    
+                    <!-- Always render video element, control visibility with CSS -->
+                    <video id="hlsPlayer"
+                           controls
+                           autoplay
+                           playsinline
+                           style="width: 100%; height: auto; background: #000; @(isLoading || !string.IsNullOrEmpty(errorMessage) ? "display: none;" : "display: block;")">
+                    </video>
+                </div>
+                <div class="card-footer">
+                    <div class="stream-info">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h5 class="mb-1">Stream: @StreamId</h5>
+                                <small class="text-muted">
+                                    <i class="bi bi-people-fill"></i> @viewerCount viewers
+                                </small>
+                            </div>
+                            <div class="stream-actions">
+                                <button class="btn btn-sm btn-outline-primary" @onclick="RefreshStream">
+                                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary" @onclick="CopyStreamUrl">
+                                    <i class="bi bi-share"></i> Share
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Video Quality & Stats -->
+            <div class="card mt-3">
+                <div class="card-body">
+                    <div class="row text-center">
+                        <div class="col-md-3">
+                            <div class="stat-box">
+                                <div class="stat-label">Latency</div>
+                                <div class="stat-value">~15-30s</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="stat-box">
+                                <div class="stat-label">Format</div>
+                                <div class="stat-value">HLS</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="stat-box">
+                                <div class="stat-label">Quality</div>
+                                <div class="stat-value">Auto</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="stat-box">
+                                <div class="stat-label">Connection</div>
+                                <div class="stat-value @(isConnected ? "text-success" : "text-danger")">
+                                    @(isConnected ? "Connected" : "Disconnected")
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat Section -->
+        <div class="col-lg-4">
+            <div class="card h-100">
+                <div class="card-header bg-primary text-white">
+                    <h5><i class="bi bi-chat-dots"></i> Live Chat</h5>
+                </div>
+                <div class="card-body d-flex flex-column chat-container">
+                    @if (!isConnected)
+                    {
+                        <div class="mb-3">
+                            <label class="form-label fw-bold">Enter your name to join chat</label>
+                            <div class="input-group">
+                                <input @bind="username"
+                                       class="form-control"
+                                       placeholder="Your name"
+                                       @onkeyup="HandleUsernameKeyPress" />
+                                <button class="btn btn-primary"
+                                        @onclick="ConnectToChat"
+                                        disabled="@string.IsNullOrWhiteSpace(username)">
+                                    Join
+                                </button>
+                            </div>
+                        </div>
+                    }
+
+                    <div class="chat-messages flex-grow-1 overflow-auto mb-3" id="chatMessages">
+                        @foreach (var message in chatMessages)
+                        {
+                            <div class="chat-message @(message.IsSystem ? "system-message" : "")">
+                                @if (message.IsSystem)
+                                {
+                                    <small class="text-muted"><em>@message.Message</em></small>
+                                }
+                                else
+                                {
+                                    <div>
+                                        <strong class="@(message.Username == username ? "text-success" : "text-primary")">
+                                            @message.Username:
+                                        </strong>
+                                        <span>@message.Message</span>
+                                    </div>
+                                    <small class="text-muted">@message.Timestamp</small>
+                                }
+                            </div>
+                        }
+                    </div>
+
+                    @if (isConnected)
+                    {
+                        <div class="chat-input-area">
+                            <div class="input-group">
+                                <input @bind="currentMessage"
+                                       @bind:event="oninput"
+                                       @onkeyup="HandleChatKeyPress"
+                                       class="form-control"
+                                       placeholder="Type a message..."
+                                       maxlength="500" />
+                                <button class="btn btn-primary"
+                                        @onclick="SendMessage"
+                                        disabled="@string.IsNullOrWhiteSpace(currentMessage)">
+                                    <i class="bi bi-send"></i>
+                                </button>
+                            </div>
+                            <div class="mt-2">
+                                <button class="btn btn-sm btn-outline-danger" @onclick="DisconnectFromChat">
+                                    Leave Chat
+                                </button>
+                            </div>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .player-loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 400px;
+        background: #000;
+        color: #fff;
+    }
+
+    .live-badge {
+        animation: pulse 1.5s infinite;
+        font-size: 14px;
+        padding: 8px 12px;
+    }
+
+    .stream-info {
+        padding: 10px 0;
+    }
+
+    .stat-box {
+        padding: 10px;
+    }
+
+    .stat-label {
+        font-size: 12px;
+        color: #6c757d;
+        font-weight: 500;
+    }
+
+    .stat-value {
+        font-size: 18px;
+        font-weight: bold;
+        margin-top: 5px;
+    }
+
+    .chat-container {
+        height: 600px;
+    }
+
+    .chat-messages {
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 8px;
+    }
+
+    .chat-message {
+        padding: 8px;
+        margin-bottom: 10px;
+        border-bottom: 1px solid #dee2e6;
+    }
+
+    .system-message {
+        text-align: center;
+        background: #e9ecef;
+        border-radius: 5px;
+        padding: 5px;
+    }
+
+    @@keyframes pulse {
+        0%, 100% {
+            opacity: 1;
+        }
+
+        50% {
+            opacity: 0.5;
+        }
+    }
+</style>
+
+@code {
+    [Parameter]
+    public string StreamId { get; set; } = string.Empty;
+
+    private bool isLoading = true;
+    private bool isLive = false;
+    private bool isConnected = false;
+    private string errorMessage = string.Empty;
+    private string debugInfo = string.Empty;
+    private int viewerCount = 0;
+    private string username = string.Empty;
+    private string currentMessage = string.Empty;
+    private string streamUrl = string.Empty;
+    private int retryAttempts = 0;
+    private const int MaxRetryAttempts = 10;
+    private System.Threading.Timer? retryTimer;
+
+    private HubConnection? hubConnection;
+    private List<ChatMessage> chatMessages = new();
+    private string? cdnBaseUrl;
+
+    protected override void OnInitialized()
+    {
+        cdnBaseUrl = Configuration["Azure:CDN:BaseUrl"];
+
+        if (string.IsNullOrEmpty(cdnBaseUrl))
+        {
+            errorMessage = "CDN configuration missing. Please check appsettings.json";
+            isLoading = false;
+            return;
+        }
+
+        // Construct stream URL correctly
+        // cdnBaseUrl should be like: https://your-cdn.azurefd.net/livestreams
+        streamUrl = $"{cdnBaseUrl}/{StreamId}/index.m3u8";
+        
+        debugInfo = $"Stream URL will be: {streamUrl}\n";
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !string.IsNullOrEmpty(cdnBaseUrl))
+        {
+            try
+            {
+                debugInfo += "Checking if stream is available...\n";
+                
+                // Check if stream exists on server
+                await CheckStreamAvailability();
+
+                if (string.IsNullOrEmpty(errorMessage))
+                {
+                    // Start attempting to play the stream
+                    await AttemptStreamPlayback();
+                }
+                else
+                {
+                    // If stream not found, start retry timer
+                    StartRetryTimer();
+                }
+            }
+            catch (Exception ex)
+            {
+                errorMessage = $"Failed to load stream: {ex.Message}";
+                debugInfo += $"Exception: {ex.Message}\n";
+            }
+            finally
+            {
+                isLoading = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task AttemptStreamPlayback()
+    {
+        try
+        {
+            debugInfo += $"Initializing player (Attempt {retryAttempts + 1})...\n";
+            
+            // Initialize the player - video element is now always present in DOM
+            var success = await JS.InvokeAsync<bool>("initPlayer", streamUrl, "hlsPlayer");
+            if (success)
+            {
+                isLive = true;
+                retryAttempts = 0;
+                debugInfo += "✓ Player initialized successfully!\n";
+            }
+            else
+            {
+                errorMessage = "Failed to initialize video player";
+                debugInfo += "✗ Player initialization failed\n";
+                
+                // Retry if under max attempts
+                if (retryAttempts < MaxRetryAttempts)
+                {
+                    StartRetryTimer();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error initializing player: {ex.Message}";
+            debugInfo += $"✗ Error: {ex.Message}\n";
+            
+            // Retry if under max attempts
+            if (retryAttempts < MaxRetryAttempts)
+            {
+                StartRetryTimer();
+            }
+        }
+    }
+
+    private void StartRetryTimer()
+    {
+        retryAttempts++;
+        
+        if (retryAttempts >= MaxRetryAttempts)
+        {
+            errorMessage = "Stream not available after multiple attempts. Please verify the broadcaster has started streaming.";
+            debugInfo += $"✗ Maximum retry attempts ({MaxRetryAttempts}) reached\n";
+            return;
+        }
+        
+        var retryDelay = Math.Min(5000, 2000 * retryAttempts); // Exponential backoff, max 5 seconds
+        debugInfo += $"Retrying in {retryDelay / 1000} seconds... (Attempt {retryAttempts}/{MaxRetryAttempts})\n";
+        
+        StateHasChanged();
+        
+        retryTimer?.Dispose();
+        retryTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                errorMessage = string.Empty;
+                await CheckStreamAvailability();
+                
+                if (string.IsNullOrEmpty(errorMessage))
+                {
+                    await AttemptStreamPlayback();
+                }
+                else
+                {
+                    StartRetryTimer();
+                }
+                
+                StateHasChanged();
+            });
+        }, null, retryDelay, Timeout.Infinite);
+    }
+
+    private async Task CheckStreamAvailability()
+    {
+        try
+        {
+            debugInfo += "Checking stream on server...\n";
+            
+            // Check if the stream is active on the server
+            var statusResponse = await Http.GetAsync($"api/streamingest/status/{StreamId}");
+            debugInfo += $"Server status: {statusResponse.StatusCode}\n";
+            
+            if (statusResponse.IsSuccessStatusCode)
+            {
+                var content = await statusResponse.Content.ReadAsStringAsync();
+                debugInfo += $"Server response: {content}\n";
+                debugInfo += "✓ Stream is active on server!\n";
+                errorMessage = string.Empty;
+            }
+            else
+            {
+                debugInfo += "✗ Stream not found on server\n";
+                errorMessage = "Stream not found. The broadcaster may not have started yet.";
+            }
+        }
+        catch (Exception ex)
+        {
+            debugInfo += $"✗ Error checking stream: {ex.Message}\n";
+            errorMessage = "Failed to check stream availability.";
+        }
+        
+        StateHasChanged();
+    }
+
+    private async Task ConnectToChat()
+    {
+        if (string.IsNullOrWhiteSpace(username)) return;
+
+        try
+        {
+            var hubUrl = new Uri(Http.BaseAddress!, "chathub");
+            
+            hubConnection = new HubConnectionBuilder()
+                .WithUrl(hubUrl)
+                .WithAutomaticReconnect()
+                .Build();
+
+            // Register event handlers
+            hubConnection.On<string, string, string>("ReceiveMessage", (user, message, timestamp) =>
+            {
+                chatMessages.Add(new ChatMessage
+                {
+                    Username = user,
+                    Message = message,
+                    Timestamp = timestamp,
+                    IsSystem = false
+                });
+                InvokeAsync(() =>
+                {
+                    StateHasChanged();
+                    _ = JS.InvokeVoidAsync("scrollChatToBottom");
+                });
+            });
+
+            hubConnection.On<string, int>("UserJoined", (user, count) =>
+            {
+                viewerCount = count;
+                if (user != username)
+                {
+                    chatMessages.Add(new ChatMessage
+                    {
+                        Message = $"{user} joined the stream",
+                        IsSystem = true
+                    });
+                }
+                InvokeAsync(StateHasChanged);
+            });
+
+            hubConnection.On<string, int>("UserLeft", (user, count) =>
+            {
+                viewerCount = count;
+                chatMessages.Add(new ChatMessage
+                {
+                    Message = $"{user} left the stream",
+                    IsSystem = true
+                });
+                InvokeAsync(StateHasChanged);
+            });
+
+            hubConnection.On<int>("ViewerCount", (count) =>
+            {
+                viewerCount = count;
+                InvokeAsync(StateHasChanged);
+            });
+
+            await hubConnection.StartAsync();
+            await hubConnection.SendAsync("JoinStream", StreamId, username);
+
+            isConnected = true;
+            chatMessages.Add(new ChatMessage
+            {
+                Message = "You joined the chat",
+                IsSystem = true
+            });
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to connect to chat: {ex.Message}";
+        }
+    }
+
+    private async Task DisconnectFromChat()
+    {
+        if (hubConnection != null)
+        {
+            await hubConnection.SendAsync("LeaveStream", StreamId);
+            await hubConnection.DisposeAsync();
+            hubConnection = null;
+        }
+
+        isConnected = false;
+        chatMessages.Clear();
+    }
+
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(currentMessage) || hubConnection == null) return;
+
+        try
+        {
+            await hubConnection.SendAsync("SendMessage", StreamId, currentMessage);
+            currentMessage = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to send message: {ex.Message}";
+        }
+    }
+
+    private async Task HandleChatKeyPress(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SendMessage();
+        }
+    }
+
+    private async Task HandleUsernameKeyPress(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(username))
+        {
+            await ConnectToChat();
+        }
+    }
+
+    private async Task RefreshStream()
+    {
+        isLoading = true;
+        errorMessage = string.Empty;
+        debugInfo = string.Empty;
+        retryAttempts = 0;
+        retryTimer?.Dispose();
+        StateHasChanged();
+
+        await Task.Delay(500);
+
+        try
+        {
+            await CheckStreamAvailability();
+            
+            if (string.IsNullOrEmpty(errorMessage))
+            {
+                await JS.InvokeVoidAsync("destroyPlayer");
+                await Task.Delay(500);
+                await AttemptStreamPlayback();
+            }
+            else
+            {
+                StartRetryTimer();
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to refresh: {ex.Message}";
+            debugInfo += $"Error: {ex.Message}\n";
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task CopyStreamUrl()
+    {
+        var url = Navigation.Uri;
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", url);
+        // You could show a toast notification here
+    }
+
+    private async Task ShowDiagnostics()
+    {
+        try
+        {
+            debugInfo += "\n--- Running Diagnostics ---\n";
+            StateHasChanged();
+            
+            var response = await Http.GetAsync($"api/streamingest/diagnose/{StreamId}");
+            if (response.IsSuccessStatusCode)
+            {
+                var diagnostics = await response.Content.ReadAsStringAsync();
+                debugInfo += diagnostics + "\n";
+            }
+            else
+            {
+                debugInfo += $"Failed to retrieve diagnostics: {response.StatusCode}\n";
+            }
+            
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            debugInfo += $"Error running diagnostics: {ex.Message}\n";
+            StateHasChanged();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        retryTimer?.Dispose();
+        
+        if (hubConnection is not null)
+        {
+            try
+            {
+                await hubConnection.SendAsync("LeaveStream", StreamId);
+            }
+            catch
+            {
+                // Ignore errors during disposal
+            }
+            await hubConnection.DisposeAsync();
+        }
+        
+        try
+        {
+            await JS.InvokeVoidAsync("destroyPlayer");
+        }
+        catch
+        {
+            // Ignore errors during disposal
+        }
+    }
+
+    private class ChatMessage
+    {
+        public string Username { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+        public string Timestamp { get; set; } = string.Empty;
+        public bool IsSystem { get; set; } = false;
+    }
+}

@@ -188,6 +188,7 @@
     private long totalBytesSent = 0;
     private Timer? durationTimer;
     private DateTime streamStartTime;
+    private DotNetObjectReference<Broadcaster>? dotnetHelper;
 
     // Chat
     private HubConnection? hubConnection;
@@ -197,6 +198,16 @@
     protected override void OnInitialized()
     {
         streamId = $"stream_{Guid.NewGuid().ToString("N").Substring(0, 8)}";
+        dotnetHelper = DotNetObjectReference.Create(this);
+    }
+
+    [JSInvokable]
+    public void UpdateBytesSent(long bytes)
+    {
+        Console.WriteLine($"🔔 UpdateBytesSent called with {bytes} bytes. Total before: {totalBytesSent}");
+        totalBytesSent += bytes;
+        Console.WriteLine($"✅ Total after: {totalBytesSent} bytes ({FormatBytes(totalBytesSent)})");
+        StateHasChanged();
     }
 
     private async Task StartBroadcasting()
@@ -218,12 +229,13 @@
             // 2. Connect to SignalR chat
             await InitializeChatConnection();
 
-            // 3. Start video capture in JavaScript
-            await JS.InvokeVoidAsync("startCapture", streamId);
+            // 3. Start video capture in JavaScript (pass dotnetHelper for callbacks)
+            await JS.InvokeVoidAsync("startCapture", streamId, dotnetHelper);
 
             // 4. Update UI state
             isStreaming = true;
             streamStartTime = DateTime.UtcNow;
+            totalBytesSent = 0; // Reset counter
 
             // Start duration timer
             durationTimer = new Timer(_ => UpdateDuration(), null, 0, 1000);
@@ -372,6 +384,8 @@
             }
             await hubConnection.DisposeAsync();
         }
+
+        dotnetHelper?.Dispose();
     }
 
     private class ChatMessage

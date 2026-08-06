@@ -5,10 +5,20 @@
 let mediaRecorder = null;
 let stream = null;
 let uploadInterval = null;
+let bytesCallback = null; // Callback to notify Blazor about bytes sent
 
-async function startCapture(streamId) {
+async function startCapture(streamId, dotnetHelper) {
     try {
         console.log('Starting capture for stream:', streamId);
+        console.log('DotNet helper received:', dotnetHelper ? 'YES' : 'NO');
+
+        // Store the .NET reference for callbacks
+        if (dotnetHelper) {
+            bytesCallback = dotnetHelper;
+            console.log('✅ Callback registered successfully');
+        } else {
+            console.warn('⚠️ No DotNet helper provided - bytes tracking will not work');
+        }
 
         // Request user media with optimal settings
         const constraints = {
@@ -103,6 +113,8 @@ async function uploadChunk(streamId, blob) {
     try {
         // Convert Blob to ArrayBuffer
         const arrayBuffer = await blob.arrayBuffer();
+        
+        console.log(`📤 Uploading chunk: ${arrayBuffer.byteLength} bytes`);
 
         // Upload via Fetch API
         const response = await fetch(`/api/streamingest/upload/${streamId}`, {
@@ -124,7 +136,20 @@ async function uploadChunk(streamId, blob) {
             }
         } else {
             const result = await response.json();
-            console.log('Uploaded:', result.received, 'bytes');
+            console.log('✅ Uploaded:', result.received, 'bytes');
+            
+            // Notify Blazor component about bytes sent
+            if (bytesCallback) {
+                try {
+                    console.log(`🔔 Calling UpdateBytesSent with ${result.received} bytes`);
+                    await bytesCallback.invokeMethodAsync('UpdateBytesSent', result.received);
+                    console.log('✅ Blazor callback completed successfully');
+                } catch (err) {
+                    console.error('❌ Error calling .NET callback:', err);
+                }
+            } else {
+                console.warn('⚠️ No callback registered - cannot update Blazor component');
+            }
         }
     } catch (error) {
         console.error('Upload error:', error);
@@ -155,6 +180,7 @@ function stopCapture() {
     }
 
     mediaRecorder = null;
+    bytesCallback = null; // Clear the callback
 }
 
 // ==========================================
@@ -186,36 +212,134 @@ function initPlayer(streamUrl, videoElementId) {
             debug: false,
             enableWorker: true,
             lowLatencyMode: false,
+            
+            // Buffer configuration - more aggressive
             backBufferLength: 90,
-            maxBufferLength: 30,
-            maxMaxBufferLength: 60,
-            manifestLoadingTimeOut: 10000,
-            manifestLoadingMaxRetry: 4,
-            manifestLoadingRetryDelay: 1000,
-            levelLoadingTimeOut: 10000,
-            levelLoadingMaxRetry: 4,
-            levelLoadingRetryDelay: 1000
+            maxBufferLength: 45,          // Increased from 30 to 45 seconds
+            maxMaxBufferLength: 90,       // Increased from 60 to 90 seconds
+            maxBufferSize: 120 * 1000 * 1000,  // Increased to 120MB
+            maxBufferHole: 1.0,           // Increased from 0.5 to 1.0 second
+            nudgeOffset: 0.1,             // Small nudge when stalling
+            nudgeMaxRetry: 10,            // More retries for nudging
+            
+            // Manifest/Level loading
+            manifestLoadingTimeOut: 15000,     // Increased timeout
+            manifestLoadingMaxRetry: 30,       // More retries
+            manifestLoadingRetryDelay: 2000,
+            levelLoadingTimeOut: 15000,        // Increased timeout
+            levelLoadingMaxRetry: 15,          // More retries
+            levelLoadingRetryDelay: 1000,
+            
+            // Fragment loading - more aggressive
+            fragLoadingTimeOut: 30000,         // Increased to 30 seconds
+            fragLoadingMaxRetry: 10,           // More retries
+            fragLoadingRetryDelay: 1000,
+            startFragPrefetch: true,
+            
+            // Live streaming specific
+            liveSyncDurationCount: 3,          // Keep 3 segments in sync
+            liveMaxLatencyDurationCount: 10,   // Allow up to 10 segments latency
+            liveDurationInfinity: true,        // Treat as infinite live stream
+            
+            // Additional optimizations
+            enableSoftwareAES: true,           // Fallback for AES
+            startLevel: -1,                    // Auto select start level
+            
+            xhrSetup: function (xhr, url) {
+                xhr.withCredentials = false;
+            }
         });
+
+        let fatalErrorCount = 0;
+        let bufferStalledCount = 0;
+        let nudgeOnStallCount = 0;
+        const maxFatalErrors = 5;              // Increased from 3
+        const maxBufferStalledErrors = 20;     // Increased from 10
+        const maxNudgeOnStallErrors = 15;      // Handle nudge errors
 
         // Error handling
         hlsInstance.on(Hls.Events.ERROR, function (event, data) {
             console.error('HLS error:', data);
 
             if (data.fatal) {
+                fatalErrorCount++;
+                
                 switch (data.type) {
                     case Hls.ErrorTypes.NETWORK_ERROR:
-                        console.error('Fatal network error, trying to recover...');
-                        hlsInstance.startLoad();
+                        console.error('Fatal network error:', data.details);
+                        
+                        if (data.response && data.response.code === 404) {
+                            console.warn('Stream manifest not found (404). Stream may not have started yet.');
+                            console.log(`Attempt ${fatalErrorCount}/${maxFatalErrors}: Will retry automatically...`);
+                        } else if (data.response && data.response.code === 0) {
+                            console.error('CORS or network connectivity issue detected');
+                            console.error('Please ensure Azure Front Door CORS is properly configured');
+                        }
+                        
+                        if (fatalErrorCount < maxFatalErrors) {
+                            console.log('Attempting to recover from network error...');
+                            setTimeout(() => {
+                                hlsInstance.startLoad();
+                            }, 2000);
+                        } else {
+                            console.error(`Failed after ${maxFatalErrors} attempts. Giving up.`);
+                        }
                         break;
+                        
                     case Hls.ErrorTypes.MEDIA_ERROR:
                         console.error('Fatal media error, trying to recover...');
-                        hlsInstance.recoverMediaError();
+                        if (fatalErrorCount < maxFatalErrors) {
+                            hlsInstance.recoverMediaError();
+                        }
                         break;
+                        
                     default:
-                        console.error('Fatal error, cannot recover');
-                        hlsInstance.destroy();
-                        alert('Stream playback failed. Please refresh the page.');
+                        console.error('Fatal error, cannot recover:', data.type);
+                        if (fatalErrorCount >= maxFatalErrors) {
+                            hlsInstance.destroy();
+                        }
                         break;
+                }
+            } else {
+                // Non-fatal errors - handle more gracefully
+                if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
+                    bufferStalledCount++;
+                    console.warn(`Non-fatal buffer stalled error (${bufferStalledCount}/${maxBufferStalledErrors})`);
+                    console.log(`Current buffer info:`, data.buffer);
+                    
+                    // Try to recover by seeking slightly forward
+                    if (bufferStalledCount > 5 && video.currentTime > 0) {
+                        console.log('Attempting to nudge playback forward by 0.1 seconds');
+                        video.currentTime += 0.1;
+                    }
+                    
+                    // Only treat as fatal if it happens too frequently
+                    if (bufferStalledCount >= maxBufferStalledErrors) {
+                        console.error('Too many buffer stalled errors, attempting recovery...');
+                        if (hlsInstance) {
+                            hlsInstance.recoverMediaError();
+                        }
+                        bufferStalledCount = 0; // Reset counter after recovery attempt
+                    }
+                } else if (data.details === Hls.ErrorDetails.BUFFER_NUDGE_ON_STALL) {
+                    nudgeOnStallCount++;
+                    console.warn(`Buffer nudge on stall (${nudgeOnStallCount}/${maxNudgeOnStallErrors})`);
+                    
+                    // This is actually HLS.js trying to fix the stall - usually good
+                    if (nudgeOnStallCount < maxNudgeOnStallErrors) {
+                        console.log('HLS.js is automatically handling the stall by nudging playback');
+                    } else {
+                        console.error('Too many nudge attempts, trying media error recovery');
+                        hlsInstance.recoverMediaError();
+                        nudgeOnStallCount = 0;
+                    }
+                } else {
+                    console.warn('Non-fatal HLS error:', data.type, data.details);
+                }
+                
+                // Reset fatal error count on successful recovery from non-fatal errors
+                if (data.type === Hls.ErrorTypes.NETWORK_ERROR && data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR) {
+                    console.log('Manifest load error, will retry...');
                 }
             }
         });
@@ -226,16 +350,50 @@ function initPlayer(streamUrl, videoElementId) {
 
         // Auto-play when manifest is parsed
         hlsInstance.on(Hls.Events.MANIFEST_PARSED, function () {
-            console.log('Manifest parsed, starting playback');
+            console.log('✓ Manifest parsed successfully, starting playback');
+            fatalErrorCount = 0;
+            bufferStalledCount = 0;
+            nudgeOnStallCount = 0;
             video.play().catch(e => {
                 console.warn('Auto-play prevented:', e);
-                // User needs to click play button
             });
         });
 
         // Monitor stream events
         hlsInstance.on(Hls.Events.FRAG_LOADED, function (event, data) {
             console.log('Fragment loaded:', data.frag.sn);
+            fatalErrorCount = 0;
+            bufferStalledCount = Math.max(0, bufferStalledCount - 1);
+            nudgeOnStallCount = Math.max(0, nudgeOnStallCount - 1);
+        });
+        
+        // Monitor level loaded (playlist updated)
+        hlsInstance.on(Hls.Events.LEVEL_LOADED, function (event, data) {
+            console.log('Level loaded, segments:', data.details.fragments.length);
+        });
+
+        // Monitor buffer events to diagnose stalling
+        hlsInstance.on(Hls.Events.BUFFER_APPENDING, function () {
+            if (bufferStalledCount > 0 || nudgeOnStallCount > 0) {
+                console.log('Buffer appending - reducing error counts');
+                bufferStalledCount = Math.max(0, bufferStalledCount - 1);
+                nudgeOnStallCount = Math.max(0, nudgeOnStallCount - 1);
+            }
+        });
+        
+        // Monitor buffer appended
+        hlsInstance.on(Hls.Events.BUFFER_APPENDED, function (event, data) {
+            // Successfully appended data to buffer
+            if (bufferStalledCount > 3 || nudgeOnStallCount > 3) {
+                console.log('Buffer successfully appended, resetting error counters');
+                bufferStalledCount = Math.max(0, Math.floor(bufferStalledCount / 2));
+                nudgeOnStallCount = Math.max(0, Math.floor(nudgeOnStallCount / 2));
+            }
+        });
+        
+        // Monitor buffer flushing
+        hlsInstance.on(Hls.Events.BUFFER_FLUSHING, function () {
+            console.log('Buffer flushing...');
         });
 
         return true;
@@ -255,7 +413,14 @@ function initPlayer(streamUrl, videoElementId) {
 
         video.addEventListener('error', function (e) {
             console.error('Video error:', e);
-            alert('Stream playback failed. Please refresh the page.');
+            if (video.error) {
+                console.error('Error code:', video.error.code);
+                console.error('Error message:', video.error.message);
+                
+                if (video.error.code === 4) {
+                    console.error('Media source not supported or file not found (404)');
+                }
+            }
         });
 
         return true;

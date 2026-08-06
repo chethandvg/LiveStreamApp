@@ -17,13 +17,13 @@
     <PackageReference Include="Scalar.AspNetCore" Version="1.2.71" />
     
     <!-- Blazor WebAssembly -->
-    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="8.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="9.0.0" />
 
     <!-- Azure Storage for video segments -->
     <PackageReference Include="Azure.Storage.Blobs" Version="12.19.1" />
 
     <!-- SignalR for real-time chat -->
-    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="8.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.0" />
     <PackageReference Include="Microsoft.Azure.SignalR" Version="1.22.0" />
 
     <!-- Response Compression -->
@@ -43,6 +43,10 @@
       <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
     </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Client\Client.csproj" />
   </ItemGroup>
 
 </Project>
